@@ -11,40 +11,21 @@ env:
   HOST_PORT: ${{ secrets.ENV_SERVICE_HOST_PORT }}
   CONTAINER_PORT: ${{ secrets.ENV_SERVICE_CONTAINER_PORT }}
 
+name: Сборка и деплой
+
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Клонирование кода
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
       - name: Сборка Docker-образа
-        run: |
-          docker build \
-            -t ${{ env.IMAGE_NAME }}:${{ gitea.sha }} \
-            -t ${{ env.IMAGE_NAME }}:latest \
-            .
+        run: docker build -t ${{ env.IMAGE_NAME }}:latest .
       
-      - name: Сохранение имеджа в файл
-        run: |
-          docker save ${{ env.IMAGE_NAME }}:latest | gzip > image.tar.gz
+      - name: Сохранить образ
+        run: docker save ${{ env.IMAGE_NAME }}:latest | gzip > image.tar.gz
       
-      - name: Передача имеджа в следующую джобу
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: image.tar.gz
-
-  deploy:
-    needs: build                   
-    runs-on: ubuntu-latest
-    steps:
-      - name: Скачать артефакт с образом
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-      
-      - name: Копирование образа на хост
+      - name: Копировать образ на хост
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -54,7 +35,7 @@ jobs:
           source: image.tar.gz
           target: /tmp/
       
-      - name: Деплой на удалённом хосте
+      - name: Деплой на хосте
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -62,23 +43,24 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            # Загружаем образ
             docker load < /tmp/image.tar.gz
             
-            # Останавливаем и удаляем старый контейнер (если есть)
             docker stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
             docker rm ${{ env.CONTAINER_NAME }} 2>/dev/null || true
             
-            # Запускаем новый контейнер
             docker run -d \
               --name ${{ env.CONTAINER_NAME }} \
               --restart unless-stopped \
               -p ${{ env.HOST_PORT }}:${{ env.CONTAINER_PORT }} \
+              -e PROJECT_NAME="${{ secrets.PROJECT_NAME }}" \
+              -e VERSION="${{ secrets.VERSION }}" \
+              -e ENVIRONMENT="${{ secrets.ENVIRONMENT }}" \
+              -e POSTGRESQL_HOST="${{ secrets.POSTGRESQL_HOST }}" \
+              -e POSTGRESQL_PORT="${{ secrets.POSTGRESQL_PORT }}" \
+              -e POSTGRESQL_USER="${{ secrets.POSTGRESQL_USER }}" \
+              -e POSTGRESQL_PASSWORD="${{ secrets.POSTGRESQL_PASSWORD }}" \
+              -e POSTGRESQL_DBNAME="${{ secrets.POSTGRESQL_DBNAME }}" \
               ${{ env.IMAGE_NAME }}:latest
             
-            # Удаляем временный файл
             rm /tmp/image.tar.gz
-            
-            # Проверяем, что контейнер запущен
-            sleep 3
-            docker ps --filter name=${{ env.CONTAINER_NAME }} --format "table {{.Names}}\t{{.Status}}"
+            docker ps --filter name=${{ env.CONTAINER_NAME }}
